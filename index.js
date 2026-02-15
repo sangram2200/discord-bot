@@ -1,161 +1,111 @@
 // index.js
-// Discord Cricket Bot - Node.js (discord.js)
-// This bot creates a thread for Indian matches and updates scores periodically.
-
-const { Client, GatewayIntentBits, Partials } = require("discord.js");
-const fetch = require("node-fetch");
+// Discord bot: every hour (except 12am-5am IST), scrape Cricbuzz for India matches and create/update threads for each match
+// Requires: discord.js v14+, dotenv, node-cron
 require("dotenv").config();
-
-const TOKEN = process.env.DISCORD_TOKEN;
-const CHANNEL_ID = process.env.CHANNEL_ID;
-const API_KEY = process.env.CRICKET_API_KEY;
-
-if (!TOKEN || !CHANNEL_ID || !API_KEY) {
-  console.error(
-    "Missing environment variables. Please set DISCORD_TOKEN, CHANNEL_ID, and CRICKET_API_KEY."
-  );
-  process.exit(1);
-}
+const {
+  Client,
+  GatewayIntentBits,
+  ThreadAutoArchiveDuration,
+} = require("discord.js");
+const cron = require("node-cron");
+const { fetchIndiaMatches } = require("./scrape-cricbuzz");
 
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-  partials: [Partials.Message, Partials.Channel, Partials.Reaction],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
 });
 
-// Replace fetchIndianMatchScore with real API integration
-async function fetchIndianMatchScore() {
-  const url = `https://api.cricapi.com/v1/currentMatches?apikey=${API_KEY}&offset=0`;
-  try {
-    const response = await fetch(url);
-    const data = await response.json();
-    if (!data.data) return null;
-    // Find the first India match (men or women)
-    const indiaMatch = data.data.find(
-      (match) => match.name && match.name.toLowerCase().includes("india")
-    );
-    if (!indiaMatch) return null;
-    const scoreStr =
-      indiaMatch.score && indiaMatch.score.length > 0
-        ? indiaMatch.score
-            .map((s) => {
-              const runs = s.r !== undefined ? s.r : s.runs;
-              const wickets = s.w !== undefined ? s.w : s.wickets;
-              const overs = s.o !== undefined ? s.o : s.overs;
-              // If inning string contains both teams, use the first team for first score, second for second, etc.
-              let teamName = s.inning;
-              // Try to extract the team name from the inning string (e.g., 'India A Women Inning 2')
-              if (teamName && teamName.includes(",")) {
-                // If the inning string is a comma-separated list, use the first team for the first score, second for the second, etc.
-                teamName = teamName.split(",")[0].trim();
-              }
-              // If the team name contains 'Inning', keep it, else add 'Inning' with the index
-              return `${teamName}: ${runs}/${wickets} (${overs} ov)`;
-            })
-            .join(" | ")
-        : "No score info";
-    return {
-      match: indiaMatch.name,
-      score: scoreStr,
-      status: indiaMatch.status,
-    };
-  } catch (error) {
-    console.error("Error fetching cricket data:", error);
-    return null;
-  }
+const CHANNEL_ID = process.env.CHANNEL_ID;
+const THREAD_PREFIX = "🏏";
+
+// Move this back to the top level so the bot remembers threads between runs
+const matchThreads = new Map();
+
+function getISTHour() {
+  const now = new Date();
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+  const ist = new Date(utc + 5.5 * 3600000);
+  return ist.getHours();
 }
 
-// Store thread/message IDs for each match by match ID
-let matchThreads = {};
+function formatMatchMessage(match) {
+  return `**${match.matchTitle}**\nStatus: ${match.status || "N/A"}\nScores: ${
+    match.teamScores || "N/A"
+  }`;
+}
 
-async function updateScoreThreads() {
-  const channel = await client.channels.fetch(CHANNEL_ID);
-  if (!channel) return;
+// MAIN FUNCTION (Flattened - no more nesting)
+async function updateIndiaMatchThreads() {
+  console.log("Running match update check..."); // Debug log
 
-  // Fetch all India matches
-  const url = `https://api.cricapi.com/v1/currentMatches?apikey=${API_KEY}&offset=0`;
-  let indiaMatches = [];
-  try {
-    const response = await fetch(url);
-    const data = await response.json();
-    if (data.data) {
-      indiaMatches = data.data.filter(
-        (match) =>
-          match.name &&
-          match.name.toLowerCase().includes("india") &&
-          match.matchStarted &&
-          !match.matchEnded &&
-          // Only include matches from today or later
-          new Date(match.date) >=
-            new Date(new Date().toISOString().slice(0, 10))
-      );
-    }
-  } catch (error) {
-    console.error("Error fetching cricket data:", error);
+  const hour = getISTHour();
+  if (hour < 5 || hour > 23) {
+    console.log("Outside of IST active hours. Skipping.");
     return;
   }
 
-  for (const match of indiaMatches) {
-    const matchId = match.id;
-    // If match is finished, skip updating and optionally remove from matchThreads
-    if (match.matchEnded) {
-      if (matchThreads[matchId]) {
-        // Optionally, you could delete the thread or archive it here
-        delete matchThreads[matchId];
-      }
-      continue;
+  try {
+    const channel = await client.channels.fetch(CHANNEL_ID);
+    if (!channel) {
+      console.error("Could not find channel!");
+      return;
     }
-    const scoreStr =
-      match.score && match.score.length > 0
-        ? match.score
-            .map((s) => {
-              const runs = s.r !== undefined ? s.r : s.runs;
-              const wickets = s.w !== undefined ? s.w : s.wickets;
-              const overs = s.o !== undefined ? s.o : s.overs;
-              let teamName = s.inning;
-              if (teamName && teamName.includes(",")) {
-                teamName = teamName.split(",")[0].trim();
-              }
-              return `${teamName}: ${runs}/${wickets} (${overs} ov)`;
-            })
-            .join(" | ")
-        : "No score info";
-    const msgContent = `Live Match: ${match.name}\n${scoreStr}\nStatus: ${match.status}`;
 
-    // If thread/message for this match doesn't exist, create it
-    if (!matchThreads[matchId]) {
-      const msg = await channel.send(msgContent);
-      // Truncate thread name to 100 characters max
-      let threadName = `${match.name} Live Updates`;
-      if (threadName.length > 100) {
-        threadName = threadName.slice(0, 97) + "...";
-      }
-      const thread = await msg.startThread({
-        name: threadName,
-        autoArchiveDuration: 60,
-      });
-      matchThreads[matchId] = { threadId: thread.id, messageId: msg.id };
-    } else {
-      // Edit the original message in the parent channel only
-      const { messageId } = matchThreads[matchId];
-      if (messageId) {
-        const msg = await channel.messages.fetch(messageId);
-        if (msg) {
-          await msg.edit(msgContent);
+    const matches = await fetchIndiaMatches();
+    console.log(`Found ${matches.length} matches.`);
+
+    for (const match of matches) {
+      let data = matchThreads.get(match.matchTitle);
+      let thread;
+      let starterMsg;
+
+      if (data) {
+        try {
+          thread = await channel.threads.fetch(data.threadId);
+          starterMsg = await thread.fetchStarterMessage();
+        } catch (err) {
+          data = null;
         }
       }
+
+      if (!data || !thread || !starterMsg) {
+        // Create new thread
+        starterMsg = await channel.send(formatMatchMessage(match));
+        thread = await starterMsg.startThread({
+          name: `${THREAD_PREFIX} ${match.matchTitle}`.slice(0, 100),
+          autoArchiveDuration: ThreadAutoArchiveDuration.OneDay,
+        });
+
+        matchThreads.set(match.matchTitle, {
+          threadId: thread.id,
+          messageId: starterMsg.id,
+        });
+        console.log(`Created new thread for: ${match.matchTitle}`);
+      } else {
+        // Update existing thread starter message
+        await starterMsg.edit(formatMatchMessage(match));
+        console.log(`Updated thread for: ${match.matchTitle}`);
+      }
+
+      // Cleanup
+      if (
+        /(result|match ended|match finished|match completed|drawn|tied|abandoned|called off|no result|final)/i.test(
+          match.status
+        )
+      ) {
+        matchThreads.delete(match.matchTitle);
+      }
     }
+  } catch (error) {
+    console.error("Error in updateIndiaMatchThreads:", error);
   }
 }
 
+// Schedule
+cron.schedule("5 * * * *", updateIndiaMatchThreads);
+
 client.once("ready", () => {
-  console.log(`Logged in as ${client.user.tag}`);
-  // Update every 60 seconds
-  setInterval(updateScoreThreads, 60000);
-  updateScoreThreads(); // Initial run
+  console.log("Discord Cricket Bot is online!");
+  updateIndiaMatchThreads();
 });
 
-client.login(TOKEN);
+client.login(process.env.BOT_TOKEN);

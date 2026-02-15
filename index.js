@@ -105,8 +105,8 @@ async function updateIndiaMatchThreads() {
   }
 }
 
-// Schedule
-cron.schedule("5 * * * *", updateIndiaMatchThreads);
+// Schedule: Every 15 minutes (at :00, :15, :30, :45)
+cron.schedule("*/15 * * * *", updateIndiaMatchThreads);
 
 client.once("ready", () => {
   console.log("Discord Cricket Bot is online!");

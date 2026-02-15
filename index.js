@@ -1,6 +1,11 @@
 // index.js
 // Discord bot: every hour (except 12am-5am IST), scrape Cricbuzz for India matches and create/update threads for each match
 // Requires: discord.js v14+, dotenv, node-cron
+const express = require("express");
+const app = express();
+app.get("/", (req, res) => res.send("Bot is Alive!"));
+app.listen(3000, () => console.log("Keep-alive server is running!"));
+
 require("dotenv").config();
 const {
   Client,
@@ -89,7 +94,7 @@ async function updateIndiaMatchThreads() {
       // Cleanup
       if (
         /(result|match ended|match finished|match completed|drawn|tied|abandoned|called off|no result|final)/i.test(
-          match.status
+          match.status,
         )
       ) {
         matchThreads.delete(match.matchTitle);

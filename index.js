@@ -100,6 +100,14 @@ async function updateScoreThreads() {
 
   for (const match of indiaMatches) {
     const matchId = match.id;
+    // If match is finished, skip updating and optionally remove from matchThreads
+    if (match.matchEnded) {
+      if (matchThreads[matchId]) {
+        // Optionally, you could delete the thread or archive it here
+        delete matchThreads[matchId];
+      }
+      continue;
+    }
     const scoreStr =
       match.score && match.score.length > 0
         ? match.score

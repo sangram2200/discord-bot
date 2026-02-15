@@ -1,0 +1,5 @@
+# Ignore environment variables and other sensitive files
+.env
+# Ignore node modules
+node_modules/
+test-cricket-api.js

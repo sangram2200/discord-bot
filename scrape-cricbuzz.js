@@ -68,7 +68,7 @@ async function fetchIndiaMatches() {
         .trim();
       // Exclude news, articles, previews, and tour/series/season entries
       if (
-        /news|trump card|report|highlights|photos|videos|blog|commentary|tour|series|season/i.test(
+        /news|Pre-match|Toss|Live|opt|trump card|report|highlights|photos|videos|blog|commentary|tour|series|season/i.test(
           baseTitle
         )
       )

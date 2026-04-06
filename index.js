@@ -1,19 +1,14 @@
 // index.js
-// Discord bot: every hour (except 12am-5am IST), scrape Cricbuzz for India matches and create/update threads for each match
-// Requires: discord.js v14+, dotenv, node-cron
-const express = require("express");
-const app = express();
-app.get("/", (req, res) => res.send("Bot is Alive!"));
-app.listen(3000, () => console.log("Keep-alive server is running!"));
-
 require("dotenv").config();
+
 const {
   Client,
   GatewayIntentBits,
   ThreadAutoArchiveDuration,
+  EmbedBuilder,
 } = require("discord.js");
 const cron = require("node-cron");
-const { fetchIndiaMatches } = require("./scrape-cricbuzz");
+const { fetchIndiaMatches } = require("./scrape-espn"); // Ensure this matches your file name!
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
@@ -22,7 +17,6 @@ const client = new Client({
 const CHANNEL_ID = process.env.CHANNEL_ID;
 const THREAD_PREFIX = "🏏";
 
-// Move this back to the top level so the bot remembers threads between runs
 const matchThreads = new Map();
 
 function getISTHour() {
@@ -33,14 +27,38 @@ function getISTHour() {
 }
 
 function formatMatchMessage(match) {
-  return `**${match.matchTitle}**\nStatus: ${match.status || "N/A"}\nScores: ${
-    match.teamScores || "N/A"
-  }`;
+  let embedColor = 0x0099ff; // Default Blue
+  const statusLower = match.status.toLowerCase();
+
+  if (
+    statusLower.includes("live") ||
+    statusLower.includes("stumps") ||
+    statusLower.includes("innings break")
+  ) {
+    embedColor = 0x00ff00; // Green for active/ongoing
+  } else if (/(result|ended|finished|won|drawn|tied)/i.test(statusLower)) {
+    embedColor = 0xff0000; // Red for finished
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(embedColor)
+    .setTitle(`🏏 ${match.matchTitle}`)
+    .addFields(
+      {
+        name: "Scores",
+        value: `**${match.teamScores || "N/A"}**`,
+        inline: false,
+      },
+      { name: "Status", value: match.status || "N/A", inline: false },
+    )
+    .setTimestamp()
+    .setFooter({ text: "Live updates from ESPNcricinfo" });
+
+  return { content: "", embeds: [embed] };
 }
 
-// MAIN FUNCTION (Flattened - no more nesting)
 async function updateIndiaMatchThreads() {
-  console.log("Running match update check..."); // Debug log
+  console.log("Running match update check...");
 
   const hour = getISTHour();
   if (hour < 5 || hour > 23) {
@@ -59,11 +77,34 @@ async function updateIndiaMatchThreads() {
     console.log(`Found ${matches.length} matches.`);
 
     for (const match of matches) {
-      let data = matchThreads.get(match.matchTitle);
+      // THE MASTER SPAM CHECKER: Is this match already completely finished?
+      const isMatchOver =
+        /(result|match ended|match finished|match completed|drawn|tied|abandoned|called off|no result|final|won)/i.test(
+          match.status,
+        );
+
+      let data = matchThreads.get(match.matchId);
       let thread;
       let starterMsg;
 
-      if (data) {
+      // Thread Recovery Process
+      if (!data) {
+        const activeThreads = await channel.threads.fetchActive();
+        const existingThread = activeThreads.threads.find((t) =>
+          t.name.includes(`[${match.matchId}]`),
+        );
+
+        if (existingThread) {
+          thread = existingThread;
+          starterMsg = await thread.fetchStarterMessage();
+          matchThreads.set(match.matchId, {
+            threadId: thread.id,
+            messageId: starterMsg.id,
+          });
+          data = matchThreads.get(match.matchId);
+          console.log(`Recovered existing thread for: ${match.matchTitle}`);
+        }
+      } else {
         try {
           thread = await channel.threads.fetch(data.threadId);
           starterMsg = await thread.fetchStarterMessage();
@@ -72,32 +113,42 @@ async function updateIndiaMatchThreads() {
         }
       }
 
+      // Create or Update
       if (!data || !thread || !starterMsg) {
-        // Create new thread
+        // SPAM BLOCKER: Don't create threads for dead matches
+        if (isMatchOver) {
+          console.log(
+            `Skipping historically finished match: ${match.matchTitle}`,
+          );
+          continue;
+        }
+
+        const threadName =
+          `${THREAD_PREFIX} ${match.matchTitle} [${match.matchId}]`.slice(
+            0,
+            100,
+          );
+
         starterMsg = await channel.send(formatMatchMessage(match));
         thread = await starterMsg.startThread({
-          name: `${THREAD_PREFIX} ${match.matchTitle}`.slice(0, 100),
+          name: threadName,
           autoArchiveDuration: ThreadAutoArchiveDuration.OneDay,
         });
 
-        matchThreads.set(match.matchTitle, {
+        matchThreads.set(match.matchId, {
           threadId: thread.id,
           messageId: starterMsg.id,
         });
         console.log(`Created new thread for: ${match.matchTitle}`);
       } else {
-        // Update existing thread starter message
+        // UPDATE Existing Thread
         await starterMsg.edit(formatMatchMessage(match));
         console.log(`Updated thread for: ${match.matchTitle}`);
       }
 
       // Cleanup
-      if (
-        /(result|match ended|match finished|match completed|drawn|tied|abandoned|called off|no result|final)/i.test(
-          match.status,
-        )
-      ) {
-        matchThreads.delete(match.matchTitle);
+      if (isMatchOver) {
+        matchThreads.delete(match.matchId);
       }
     }
   } catch (error) {
@@ -105,11 +156,10 @@ async function updateIndiaMatchThreads() {
   }
 }
 
-// Schedule
-cron.schedule("5 * * * *", updateIndiaMatchThreads);
+cron.schedule("*/3 * * * *", updateIndiaMatchThreads); // Runs every 3 minutes
 
 client.once("ready", () => {
-  console.log("Discord Cricket Bot is online!");
+  console.log(`Logged in as ${client.user.tag}!`);
   updateIndiaMatchThreads();
 });
 

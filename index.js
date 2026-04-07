@@ -18,6 +18,7 @@ const CHANNEL_ID = process.env.CHANNEL_ID;
 const THREAD_PREFIX = "🏏";
 
 const matchThreads = new Map();
+const deadMatches = new Set();
 
 function getISTHour() {
   const now = new Date();
@@ -77,6 +78,8 @@ async function updateIndiaMatchThreads() {
     console.log(`Found ${matches.length} matches.`);
 
     for (const match of matches) {
+      // THE GRAVEYARD CHECK: If we already finished processing this match, ignore it forever.
+      if (deadMatches.has(match.matchId)) continue;
       // THE MASTER SPAM CHECKER: Is this match already completely finished?
       const isMatchOver =
         /(result|match ended|match finished|match completed|drawn|tied|abandoned|called off|no result|final|won)/i.test(
@@ -120,6 +123,7 @@ async function updateIndiaMatchThreads() {
           console.log(
             `Skipping historically finished match: ${match.matchTitle}`,
           );
+          deadMatches.add(match.matchId);
           continue;
         }
 
@@ -149,6 +153,7 @@ async function updateIndiaMatchThreads() {
       // Cleanup
       if (isMatchOver) {
         matchThreads.delete(match.matchId);
+        deadMatches.add(match.matchId);
       }
     }
   } catch (error) {

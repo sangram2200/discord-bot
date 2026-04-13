@@ -37,7 +37,10 @@ function formatMatchMessage(match) {
     statusLower.includes("innings break")
   ) {
     embedColor = 0x00ff00; // Green for active/ongoing
-  } else if (/(result|ended|finished|won|drawn|tied)/i.test(statusLower)) {
+  } else if (
+    /(result|ended|finished|won|drawn|tied)/i.test(statusLower) &&
+    !statusLower.includes("toss")
+  ) {
     embedColor = 0xff0000; // Red for finished
   }
 
@@ -74,17 +77,23 @@ async function updateIndiaMatchThreads() {
       return;
     }
 
+    // THE JITTER: Wait a random amount of time between 0 and 12 seconds
+    // This hides the robotic 60-second cron signature from Cloudflare
+    const jitterDelay = Math.floor(Math.random() * 12000);
+    await new Promise((resolve) => setTimeout(resolve, jitterDelay));
+
     const matches = await fetchIndiaMatches();
     console.log(`Found ${matches.length} matches.`);
 
     for (const match of matches) {
       // THE GRAVEYARD CHECK: If we already finished processing this match, ignore it forever.
       if (deadMatches.has(match.matchId)) continue;
-      // THE MASTER SPAM CHECKER: Is this match already completely finished?
+      // THE MASTER SPAM CHECKER:
+      // It checks for match-ending words, but strictly IGNORES "won the toss"
       const isMatchOver =
         /(result|match ended|match finished|match completed|drawn|tied|abandoned|called off|no result|final|won)/i.test(
           match.status,
-        );
+        ) && !/toss/i.test(match.status);
 
       let data = matchThreads.get(match.matchId);
       let thread;
@@ -161,7 +170,7 @@ async function updateIndiaMatchThreads() {
   }
 }
 
-cron.schedule("*/3 * * * *", updateIndiaMatchThreads); // Runs every 3 minutes
+cron.schedule("* * * * *", updateIndiaMatchThreads); // Runs every 1 minute
 
 client.once("ready", () => {
   console.log(`Logged in as ${client.user.tag}!`);

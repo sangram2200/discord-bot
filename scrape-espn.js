@@ -114,7 +114,11 @@ async function fetchIndiaMatches() {
           const teamScoresArray = match.teams.map((t) => {
             const teamName = t.team?.name || "Unknown Team";
             const score = t.score ? t.score : "Yet to bat";
-            return `${teamName} ${score}`;
+
+            // Grab the overs string if it exists and append it
+            const overs = t.scoreInfo ? ` (${t.scoreInfo})` : "";
+
+            return `${teamName} ${score}${overs}`;
           });
           teamScores = teamScoresArray.join(" | ");
         }
